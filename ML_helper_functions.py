@@ -99,6 +99,16 @@ def y_randomization_test(yx, model_dicts, crys_prop, scoring='f1_macro', n_repea
             y_randomized_scores.append(score_y_randomized)
 
 
+        #y_initial_score = train_test_estimate(X, y, copy(model), scorer)
+
+        #y_randomized_scores = []
+        #for _ in range(n_repeats):
+
+        #    np.random.seed(92)
+        #    np.random.shuffle(y)
+        #    score_y_randomized = train_test_estimate(X, y, copy(model), scorer)
+        #    y_randomized_scores.append(score_y_randomized)
+
         ax[i].hist(y_randomized_scores, bins=15, color='blue', label='y-randomized')
         ax[i].axvline(y_initial_score, color='red', lw=4, label='y-initial')
         ax[i].set_title('%s model' % (model_name))
@@ -107,7 +117,7 @@ def y_randomization_test(yx, model_dicts, crys_prop, scoring='f1_macro', n_repea
 
     ax[len(model_dicts[crys_prop])-1].set_xlabel(scoring)
 
-    fig.suptitle(f'{crys_prop} prediction', y=.995, fontsize=20)
+    fig.suptitle(f'$\Delta${crys_prop} prediction', y=.995, fontsize=20)
     fig.tight_layout(rect=[0, 0, 1, 0.975])
     if savefig:
         fig.savefig(f'y_randomization_test_{crys_prop}.png', dpi=dpi)
@@ -136,6 +146,7 @@ def show_importances(crys_prop, yx, model_dicts, savefig=False):
 
         model_importances.append([m_name, result.importances_mean])
     
+    # https://github.com/bhimmetoglu/feature-selection/blob/master/FeatSelection.ipynb
     all_i = pd.DataFrame(data=np.hstack([v[1].reshape(-1, 1) for v in model_importances]),
                          index=yx.columns[1:],
                          columns=[v[0] for v in model_importances])
@@ -192,4 +203,92 @@ def show_importance_hists(crys_prop, yx, model_dicts, savefig=False):
     fig.tight_layout()
     if savefig:
         fig.savefig(f'permutation_FI_{crys_prop}_separate.png', dpi=dpi)
+    plt.show()
+
+
+
+
+
+
+
+
+
+def inhome_permutation_importance(estimator,
+                                   feature_groups, X, y,
+                                   scoring='f1_macro',
+                                   n_repeats=10,
+                                   random_state=23):
+
+    result = {'score_difference': np.zeros((len(feature_groups), n_repeats)),
+              'feature_group_names': np.zeros(len(feature_groups), dtype='O')}
+
+    X_train_original, X_test, y_train, y_test = train_test_split(X, y,
+                                                                test_size=.2,
+                                                                stratify=y,
+                                                                random_state=random_state)
+
+    feature_list_indices = {col: idx for idx, col in enumerate(X_train_original.columns)}
+    scorer = get_scorer(scoring)
+
+    for i, (feature_group_name, feature_list) in enumerate(feature_groups.items()):
+#         print(feature_group_name)
+
+        score_difference = []
+
+        for j in range(n_repeats):
+
+            np.random.seed(random_state+j)
+            X_train_permuted = X_train_original.copy()
+
+            # permute feature values in selected columns
+            for col in feature_list:
+    #             print(col)
+                col_idx = feature_list_indices[col]
+                permuted_indices = np.random.permutation(X_train_original.shape[0])
+
+#                 col = pd.DataFrame(np.random.uniform(low=-1.0, high=1.0, size=X_train_original.shape[0])) # fill with random values from U(-1, 1)
+                col = X_train_permuted.iloc[permuted_indices, col_idx] # permute present values
+                col.index = X_train_permuted.index
+                X_train_permuted.iloc[:, col_idx] = col
+
+#             X_train_permuted = X_train_permuted.drop(columns=feature_list)
+
+            # train model using OLD data matrix X_train_original and evaluate
+            est_original = estimator.fit(X_train_original, y_train)
+            score_original = scorer(est_original, X_test, y_test)
+
+            # train model using NEW data matrix X_train_permuted and evaluate
+            est_permuted = estimator.fit(X_train_permuted, y_train)
+            score_permuted = scorer(est_permuted, X_test, y_test)
+
+
+            result['score_difference'][i, j] = score_original - score_permuted
+
+        result['feature_group_names'][i] = feature_group_name
+
+    return result
+
+
+def feature_group_permutation_and_refit_importances(yx, model_dicts, crys_prop, feature_groups):
+
+    fig, ax = plt.subplots(len(model_dicts[crys_prop]), 1, figsize=(7, len(model_dicts[crys_prop])*7))
+
+    for i, (model_name, model) in enumerate(model_dicts[crys_prop].items()):
+
+        result = inhome_permutation_importance(estimator=copy(model),
+                                                feature_groups=feature_groups,
+                                                X=yx.iloc[:, 1:], y=yx.iloc[:, 0].astype(int),
+                                                scoring='f1_macro',
+                                                n_repeats=10,
+                                                random_state=23)
+
+        perm_sorted_idx = result['score_difference'].mean(axis=1).argsort()
+
+        ax[i].boxplot(result['score_difference'][perm_sorted_idx].T,
+                      vert=True,
+                      labels=result['feature_group_names'][perm_sorted_idx])
+        ax[i].tick_params(axis='x', rotation=90)
+        ax[i].set_title('%s model permutation feature importance' % model_name)
+
+    fig.tight_layout()
     plt.show()
